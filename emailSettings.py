@@ -10,7 +10,7 @@ PASSWORD = ''
 MAILBOX = r'[Gmail]/Starred'
 # MAILBOX = 'Inbox'
 
-EXPORT_LOCATION = r'C:\Users\makan\OneDrive\Desktop\Said\Mailbox\Renee-Editorial\emailData\\'
+EXPORT_LOCATION = r''
 
 FILTER_SENDER = False
 SENDER_ORGANISATION = ''
