@@ -6,7 +6,6 @@
 # Hopefully corrected most issues which were in the previous version,
 # including decoding errors and messages & dates being shown incorrectly.
 
-
 import imaplib
 import mimetypes
 
@@ -17,13 +16,14 @@ import re
 from sys import exit
 import os
 from tqdm import tqdm
+from pathlib import Path
 
 import email
 from email.policy import default
 from email.header import decode_header, make_header
 
 # Change these settings in the email_settings.py file.
-from email_settings import SERVER, PORT, EMAIL_ADDRESS, PASSWORD, MAILBOX, \
+from emailSettings import SERVER, PORT, EMAIL_ADDRESS, PASSWORD, MAILBOXES, \
     EXPORT_LOCATION
 DUPLICATE_DATA = []
 
@@ -47,8 +47,9 @@ def exportData(df: pd.DataFrame):
     options['strings_to_formulas'] = False
     options['strings_to_urls'] = False
 
-    with pd.ExcelWriter(EXPORT_LOCATION + 'emailData2.xlsx',
-                        options=options, engine='xlsxwriter') as w:
+    export_loc = (EXPORT_LOCATION / 'emailData.xlsx')
+    
+    with pd.ExcelWriter(export_loc, options=options, engine='xlsxwriter') as w:
         df.to_excel(w, sheet_name='Data', index=False)
 
 
@@ -83,15 +84,16 @@ def extractText(ePart, charSet):
 
 def extractHTML(ePart, loc):
     html = ePart.get_payload(decode=True)
-    exportHTML = EXPORT_LOCATION + str(loc) + '.html'
+    exportHTML = (FOLDER_LOCATION / 'raw' / f'{str(loc)}.html').resolve()
+
     with open(exportHTML, 'wb') as f:
         f.write(html)
 
-    return exportHTML, html
+    return str(exportHTML), html
 
 
 def extractPDF(ePart, attachmentID, loc):
-    export = EXPORT_LOCATION + str(loc) + '_' + str(attachmentID) + '.pdf'
+    export = (FOLDER_LOCATION / 'attachments' / f'{str(loc)}_{str(attachmentID)}.pdf').resolve()
     content = ePart.get_payload(decode=True)
     with open(export, 'wb') as f:
         f.write(content)
@@ -99,7 +101,7 @@ def extractPDF(ePart, attachmentID, loc):
 
 
 def extractWord(ePart, attachmentID, loc):
-    export = EXPORT_LOCATION + str(loc) + '_' + str(attachmentID) + '.docx'
+    export = (FOLDER_LOCATION / 'attachments' / f'{str(loc)}_{str(attachmentID)}.docx').resolve()
     content = ePart.get_payload(decode=True)
     with open(export, 'wb') as f:
         f.write(content)
@@ -107,11 +109,11 @@ def extractWord(ePart, attachmentID, loc):
 
 
 def exportUnknown(ePart, attachmentID, loc, ftype):
-    fname = EXPORT_LOCATION + str(loc) + '_' + str(attachmentID) + ftype
+    export = (FOLDER_LOCATION / 'attachments' / f'{str(loc)}_{str(attachmentID)}{ftype}').resolve()
     content = ePart.get_payload(decode=True)
-    with open(fname, 'wb') as f:
+    with open(export, 'wb') as f:
         f.write(content)
-    return fname
+    return export
 
 
 def extractParts(message: email.message.Message, loc):
@@ -134,10 +136,10 @@ def extractParts(message: email.message.Message, loc):
             elif contentType == 'application/pdf':
                 pdfLoc = extractPDF(ePart, attachmentID, loc)
                 attachmentID += 1
-                attachments.append(pdfLoc)
+                attachments.append(str(pdfLoc))
             elif contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
                 wordLoc = extractWord(ePart, attachmentID, loc)
-                attachments.append(wordLoc)
+                attachments.append(str(wordLoc))
             else:
                 ftype = mimetypes.guess_extension(ePart.get_content_type())
                 if not ftype:
@@ -145,7 +147,7 @@ def extractParts(message: email.message.Message, loc):
                 try:
                     fname = exportUnknown(ePart, attachmentID, loc, ftype)
                     attachmentID += 1
-                    attachments.append(fname)
+                    attachments.append(str(fname))
                 except:
                     continue
 
@@ -163,7 +165,8 @@ def extractParts(message: email.message.Message, loc):
         try:
             retText = html2text(htmlpayload.decode(errors='replace'))
         except UnboundLocalError:
-            print(f' Email {loc} has no content. Check whether it is empty.')
+            # print(f' Email {loc} has no content. Check whether it is empty.')
+            pass
         except Exception as e:
             print(e)
 
@@ -231,12 +234,16 @@ def extractHeaders(message):
     return sender, to, subject, dateformatted, timeformatted, timezone
 
 
-def fetchEmailData(emails):
+def extract_main_body(text):
+    pass
+
+
+def fetchEmailData(folder, emails):
     # Allows the function to use mailbox and progessbar.
     global mailbox
     global pbar
     # The data will be stored in a pandas dataframe object.
-    retData = pd.DataFrame(columns=['From', 'To', 'Subject', 'Date',
+    retData = pd.DataFrame(columns=['Mailbox', 'ID', 'From', 'To', 'Subject', 'Date',
                                     'Time', 'Timezone', 'Message',
                                     'HTML Location', 'Attachment Location'])
     # Unique ID number of each email in the dataframe.
@@ -272,7 +279,7 @@ def fetchEmailData(emails):
             except:
                 pass
         elif dupe is False:
-            retData.loc[loc] = [sender, to, subject, dateformatted,
+            retData.loc[loc] = [folder, str(loc), sender, to, subject, dateformatted,
                                 timeformatted, timezone, text,
                                 htmlLoc, attachments]
             loc += 1
@@ -290,27 +297,70 @@ if __name__ == '__main__':
         print(e)
         exit()
 
-    # Select the mailbox.
+    # Create export folders
     try:
-        mailbox.select(MAILBOX)
-        result, data = mailbox.uid('search', None, 'All')
-        if result == 'OK':
-            emails = data[0].split()
-            print(f'{str(len(emails))} emails found in {MAILBOX}')
-    except Exception as e:
-        print('Accessing Mailbox Failed...')
-        print(e)
-        exit()
+        os.mkdir(EXPORT_LOCATION)
+    except FileExistsError:
+        for x in range(100):
+            new_export = Path(EXPORT_LOCATION.parent / f'export{x}')
+            if os.path.exists(new_export):
+                continue
+            else:
+                EXPORT_LOCATION = new_export
+                os.mkdir(EXPORT_LOCATION)
+                break
+    
+    master_data = pd.DataFrame(columns=['Mailbox', 'ID', 'From', 'To', 'Subject', 'Date',
+                                    'Time', 'Timezone', 'Message',
+                                    'HTML Location', 'Attachment Location'])
+    '''''
+    # This sections lists all the available folders.
+    for i in mailbox.list()[1]:
+        l = i.decode().split(' "/" ')
+        print(l[0] + " = " + l[1])
+    '''''
+    for folder in MAILBOXES:
+        # Select the mailbox.
+        try:
+            mailbox.select(folder)
+            result, data = mailbox.uid('search', None, 'All')
+            if result == 'OK':
+                emails = data[0].split()
+                print(f'{str(len(emails))} emails found in {folder}')
+        except Exception as e:
+            print('Accessing Mailbox Failed...')
+            print(e)
+            exit()
 
-    # Fetch the email data
-    # TQDM Provides a progress bar to easier track the process.
-    pbar = tqdm(total=len(emails), desc='Fetcing Emails')
-    # Threading
-    # from multiprocessing.pool import ThreadPool
-    #p = ThreadPool(40)    
-    # data = p.map(fetchEmailData, emails)
-    #p.close()
-    data = fetchEmailData(emails)
-    pbar.close()
-    exportData(data)
-    print(f'{len(emails)} emails successfully downloaded.')
+        # MAKE MAILBOX FOLDER
+        clean_folder = folder.replace('[', '').replace(']', '').replace('/', '-').replace('\\', '').replace(' ', '-')
+        clean_folder = clean_folder.replace('\"', '')
+
+        FOLDER_LOCATION = (EXPORT_LOCATION / f'{clean_folder}')
+        os.mkdir(FOLDER_LOCATION)
+
+        raw_data_folder = (EXPORT_LOCATION / f'{clean_folder}/raw').resolve()
+        attachments_folder = (EXPORT_LOCATION / f'{clean_folder}/attachments').resolve()
+
+        if not os.path.exists(raw_data_folder):
+            os.mkdir(raw_data_folder)
+
+        if not os.path.exists(attachments_folder):
+            os.mkdir(attachments_folder)
+
+        # Fetch the email data
+        # TQDM Provides a progress bar to easier track the process.
+        pbar = tqdm(total=len(emails), desc='Fetcing Emails')
+        # Threading
+        # from multiprocessing.pool import ThreadPool
+        #p = ThreadPool(40)    
+        # data = p.map(fetchEmailData, emails)
+        #p.close()
+        data = fetchEmailData(clean_folder, emails)
+        pbar.close()
+        print(f'{len(emails)} emails successfully downloaded.')
+
+        master_data = pd.concat([master_data, data])
+        mailbox.unselect()
+
+    exportData(master_data)
