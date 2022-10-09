@@ -8,6 +8,7 @@
 
 import imaplib
 import mimetypes
+from operator import length_hint
 
 import pandas as pd
 from html2text import html2text
@@ -235,7 +236,47 @@ def extractHeaders(message):
 
 
 def extract_main_body(text):
-    pass
+    if len(text) == 0:
+        return text, 0
+    main_body = text
+    potential_delimiters = ['\nFrom:', '\n>', '\nOn', '\n\n20']
+    for delimiter in potential_delimiters:
+        parts = main_body.split(delimiter)
+        if len(parts) > 1:
+            main_body = parts[0]
+
+    main_body = main_body.strip()
+
+    potential_greetings = ['hi', 'dear', 'hello', 'szia', 'hope you are']
+    potential_farewells =  ['best', 'regards', 'kind', 'looking forward']
+    # The length cutoff determines whats the longest line the code accepts as relevant text
+    length_cutoff_greetings = 20
+    length_cutoff_farewells = 35
+
+    lines = main_body.splitlines(True)
+    total_lines = len(lines)
+
+    end_reached = False
+
+    for inx, line in enumerate(lines):
+        if end_reached:
+            lines.pop(inx)
+            continue
+        if inx == 0:
+            for s in potential_greetings:
+                if s in line.lower():
+                    if len(line) > length_cutoff_greetings:
+                        lines.pop(inx)
+        if total_lines - inx < 4:
+            for s in potential_farewells:
+                if s in line.lower():
+                    if len(line) > length_cutoff_greetings:
+                        lines.pop(inx)
+                        end_reached = True
+    
+    main_text = ''.join(lines)
+    
+    return main_text, len(main_text.split(None))
 
 
 def fetchEmailData(folder, emails):
@@ -244,7 +285,7 @@ def fetchEmailData(folder, emails):
     global pbar
     # The data will be stored in a pandas dataframe object.
     retData = pd.DataFrame(columns=['Mailbox', 'ID', 'From', 'To', 'Subject', 'Date',
-                                    'Time', 'Timezone', 'Message',
+                                    'Time', 'Timezone', 'Message', 'Main Body', 'Main Body Length',
                                     'HTML Location', 'Attachment Location'])
     # Unique ID number of each email in the dataframe.
     loc = 1
@@ -267,6 +308,8 @@ def fetchEmailData(folder, emails):
         # Body
         text, htmlLoc, attachments = extractParts(message, loc)
 
+        main_body, main_body_len = extract_main_body(text)
+
         # Check for duplicates
         try:
             entry = sender + to + subject + dateformatted + timeformatted
@@ -280,7 +323,7 @@ def fetchEmailData(folder, emails):
                 pass
         elif dupe is False:
             retData.loc[loc] = [folder, str(loc), sender, to, subject, dateformatted,
-                                timeformatted, timezone, text,
+                                timeformatted, timezone, text, main_body, main_body_len,
                                 htmlLoc, attachments]
             loc += 1
 
@@ -331,36 +374,40 @@ if __name__ == '__main__':
             print('Accessing Mailbox Failed...')
             print(e)
             exit()
+        
+        if len(emails) > 0:
+            # MAKE MAILBOX FOLDER
+            clean_folder = folder.replace('[', '').replace(']', '').replace('/', '-').replace('\\', '').replace(' ', '-')
+            clean_folder = clean_folder.replace('\"', '')
 
-        # MAKE MAILBOX FOLDER
-        clean_folder = folder.replace('[', '').replace(']', '').replace('/', '-').replace('\\', '').replace(' ', '-')
-        clean_folder = clean_folder.replace('\"', '')
+            FOLDER_LOCATION = (EXPORT_LOCATION / f'{clean_folder}')
+            os.mkdir(FOLDER_LOCATION)
 
-        FOLDER_LOCATION = (EXPORT_LOCATION / f'{clean_folder}')
-        os.mkdir(FOLDER_LOCATION)
+            raw_data_folder = (EXPORT_LOCATION / f'{clean_folder}/raw').resolve()
+            attachments_folder = (EXPORT_LOCATION / f'{clean_folder}/attachments').resolve()
 
-        raw_data_folder = (EXPORT_LOCATION / f'{clean_folder}/raw').resolve()
-        attachments_folder = (EXPORT_LOCATION / f'{clean_folder}/attachments').resolve()
+            if not os.path.exists(raw_data_folder):
+                os.mkdir(raw_data_folder)
 
-        if not os.path.exists(raw_data_folder):
-            os.mkdir(raw_data_folder)
+            if not os.path.exists(attachments_folder):
+                os.mkdir(attachments_folder)
 
-        if not os.path.exists(attachments_folder):
-            os.mkdir(attachments_folder)
+            # Fetch the email data
+            # TQDM Provides a progress bar to easier track the process.
+            pbar = tqdm(total=len(emails), desc='Fetcing Emails')
+            # Threading
+            # from multiprocessing.pool import ThreadPool
+            #p = ThreadPool(40)    
+            # data = p.map(fetchEmailData, emails)
+            #p.close()
+            data = fetchEmailData(clean_folder, emails)
+            pbar.close()
+            print(f'{len(emails)} emails successfully downloaded.')
 
-        # Fetch the email data
-        # TQDM Provides a progress bar to easier track the process.
-        pbar = tqdm(total=len(emails), desc='Fetcing Emails')
-        # Threading
-        # from multiprocessing.pool import ThreadPool
-        #p = ThreadPool(40)    
-        # data = p.map(fetchEmailData, emails)
-        #p.close()
-        data = fetchEmailData(clean_folder, emails)
-        pbar.close()
-        print(f'{len(emails)} emails successfully downloaded.')
+            master_data = pd.concat([master_data, data])
+        else:
+            print(f'No emails found in this mailbox.')
 
-        master_data = pd.concat([master_data, data])
         mailbox.unselect()
 
     exportData(master_data)
