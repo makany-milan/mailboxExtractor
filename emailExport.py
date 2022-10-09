@@ -262,7 +262,7 @@ def extract_main_body(text):
         if end_reached:
             lines.pop(inx)
             continue
-        if inx == 0:
+        if inx < 2:
             for s in potential_greetings:
                 if s in line.lower():
                     if len(line) > length_cutoff_greetings:
